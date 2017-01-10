@@ -1,7 +1,8 @@
 //
-// MLX90393.cpp : arduino driver for MLX90393 magnetometer
+// MLX90393.cpp : MBED SPI driver for MLX90393 magnetometer
 //
-// Copyright 2016 Theodore C. Yapo
+// Copyright 2017 Moritz Hoffmann
+// based on "arduino-MLX90393" by Theodore C. Yapo (2016)
 //
 // released under MIT License (see file)
 //
@@ -9,29 +10,43 @@
 #ifndef MLX90393_H_INCLUDED
 #define MLX90393_H_INCLUDED
 
-#include <Arduino.h>
-#include <Wire.h>
+#include "mbed.h"
 
 class MLX90393
 {
 public:
-  enum { STATUS_OK = 0, STATUS_ERROR = 0xff } return_status_t;
-  enum { Z_FLAG = 0x8, Y_FLAG = 0x4, X_FLAG = 0x2, T_FLAG = 0x1 } axis_flag_t;
+  // SPI Format
+  static const int spi_mode = 3;
+  static const int spi_bits = 8;
 
-  struct txyz
-  {
+  // return status enum
+  enum {
+    STATUS_OK = 0,
+    STATUS_ERROR = 0xff
+  } return_status_t;
+
+  // axis flags
+  enum {
+    Z_FLAG = 0x8,
+    Y_FLAG = 0x4,
+    X_FLAG = 0x2,
+    T_FLAG = 0x1
+  } axis_flag_t;
+
+  struct txyz{
     float t;
     float x;
     float y;
     float z;
   };
-  struct txyzRaw
-  {
+
+  struct txyzRaw{
     uint16_t t;
     uint16_t x;
     uint16_t y;
     uint16_t z;
   };
+
   MLX90393();
   
   // raw device commands
@@ -68,18 +83,71 @@ public:
   uint8_t setWOTThreshold(uint16_t wot_thresh);
 
 private:
-  enum { I2C_BASE_ADDR = 0x0c };
-  enum { GAIN_SEL_REG = 0x0, GAIN_SEL_MASK = 0x0070, GAIN_SEL_SHIFT = 4 };
-  enum { OSR_REG = 0x2, OSR_MASK = 0x0003, OSR_SHIFT = 0 };
-  enum { OSR2_REG = 0x2, OSR2_MASK = 0x0180, OSR2_SHIFT = 11 };
-  enum { DIG_FLT_REG = 0x2, DIG_FLT_MASK = 0x001c, DIG_FLT_SHIFT = 2 };
-  enum { RES_XYZ_REG = 0x2, RES_XYZ_MASK = 0x07e0, RES_XYZ_SHIFT = 5 };
-  enum { TCMP_EN_REG = 0x1, TCMP_EN_MASK = 0x0400, TCMP_EN_SHIFT = 10 };
-  enum { X_OFFSET_REG = 4, Y_OFFSET_REG = 5, Z_OFFSET_REG = 6 };
-  enum { WOXY_THRESHOLD_REG = 7, WOZ_THRESHOLD_REG = 8, WOT_THRESHOLD_REG = 9 };
-  enum { BURST_MODE_BIT = 0x80, WAKE_ON_CHANGE_BIT = 0x40, 
-         POLLING_MODE_BIT = 0x20, ERROR_BIT = 0x10, EEC_BIT = 0x08,
-         RESET_BIT = 0x04, D1_BIT = 0x02, D0_BIT = 0x01 };
+  // SPI instance
+  SPI* spi;
+
+  // CS Pin
+  DigitalOut cs;
+
+
+  enum {
+    GAIN_SEL_REG = 0x0,
+    GAIN_SEL_MASK = 0x0070,
+    GAIN_SEL_SHIFT = 4
+  };
+
+  enum {
+    OSR_REG = 0x2,
+    OSR_MASK = 0x0003,
+    OSR_SHIFT = 0
+  };
+
+  enum {
+    OSR2_REG = 0x2,
+    OSR2_MASK = 0x0180,
+    OSR2_SHIFT = 11
+  };
+
+  enum {
+    DIG_FLT_REG = 0x2,
+    DIG_FLT_MASK = 0x001c,
+    DIG_FLT_SHIFT = 2
+  };
+
+  enum {
+    RES_XYZ_REG = 0x2,
+    RES_XYZ_MASK = 0x07e0,
+    RES_XYZ_SHIFT = 5
+  };
+
+  enum {
+    TCMP_EN_REG = 0x1,
+    TCMP_EN_MASK = 0x0400,
+    TCMP_EN_SHIFT = 10
+  };
+
+  enum {
+    X_OFFSET_REG = 4,
+    Y_OFFSET_REG = 5,
+    Z_OFFSET_REG = 6
+  };
+
+  enum {
+    WOXY_THRESHOLD_REG = 7,
+    WOZ_THRESHOLD_REG = 8,
+    WOT_THRESHOLD_REG = 9
+  };
+
+  enum {
+    BURST_MODE_BIT = 0x80,
+    WAKE_ON_CHANGE_BIT = 0x40, 
+    POLLING_MODE_BIT = 0x20,
+    ERROR_BIT = 0x10,
+    EEC_BIT = 0x08,
+    RESET_BIT = 0x04,
+    D1_BIT = 0x02,
+    D0_BIT = 0x01
+  };
 
   enum {
     CMD_NOP = 0x00,
@@ -96,8 +164,6 @@ private:
   };
 
   // parameters are cached to avoid reading them from sensor unnecessarily
-  uint8_t I2C_address;
-  int DRDY_pin;
   uint8_t gain_sel;
   uint8_t gain_sel_dirty;
   uint8_t res_x;

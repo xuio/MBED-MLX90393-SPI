@@ -1,17 +1,22 @@
 //
-// MLX90393.cpp : arduino driver for MLX90393 magnetometer
+// MLX90393.cpp : MBED SPI driver for MLX90393 magnetometer
 //
-// Copyright 2016 Theodore C. Yapo
+// Copyright 2017 Moritz Hoffmann
+// based on "arduino-MLX90393" by Theodore C. Yapo (2016)
 //
 // released under MIT License (see file)
 //
 
-#include <MLX90393.h>
+#include "MLX90393.h"
 
-MLX90393::
-MLX90393()
-{
-  I2C_address = 0;
+MLX90393::MLX90393(PinName csPin, SPI* spi_)  : cs(csPin){
+  // set cs high (active low)
+  cs = 1;
+
+  // store spi instance
+  spi = spi_;
+
+  // reset variables
   gain_sel = 0;
   gain_sel_dirty = 1;
   res_x = 0;
@@ -41,16 +46,7 @@ MLX90393()
   base_z_sens = 0.294;
 }
 
-uint8_t
-MLX90393::
-begin(uint8_t A1, uint8_t A0, int DRDY_pin)
-{
-  I2C_address = I2C_BASE_ADDR | (A1?2:0) | (A0?1:0);
-  this->DRDY_pin = DRDY_pin;
-  if (DRDY_pin >= 0){
-    pinMode(DRDY_pin, INPUT);
-  }
-  Wire.begin();
+uint8_t MLX90393::begin(){
   uint8_t status1 = checkStatus(reset());
   uint8_t status2 = setGainSel(7);
   uint8_t status3 = setResolution(0, 0, 0);
@@ -60,10 +56,7 @@ begin(uint8_t A1, uint8_t A0, int DRDY_pin)
   return status1 | status2 | status3 | status4 | status5 | status6;
 }
 
-void
-MLX90393::
-invalidateCache()
-{
+void MLX90393::invalidateCache(){
   gain_sel_dirty = 1;
   res_xyz_dirty = 1;
   osr_dirty = 1;
@@ -72,10 +65,7 @@ invalidateCache()
   tcmp_en_dirty = 1; 
 }
 
-uint8_t
-MLX90393::
-checkStatus(uint8_t status)
-{
+uint8_t MLX90393::checkStatus(uint8_t status){
   if (status & ERROR_BIT){
     return STATUS_ERROR;
   } else {
@@ -83,83 +73,53 @@ checkStatus(uint8_t status)
   }
 }
 
-uint8_t
-MLX90393::
-sendCommand(uint8_t cmd)
-{
-  Wire.beginTransmission(I2C_address);
-  if (Wire.write(cmd) != 1){
-    return STATUS_ERROR;
+uint8_t MLX90393::sendCommand(uint8_t cmd, bool release_cs = true){
+  // activate ChipSelect
+  cs = 0;
+  uint8_t buffer = spi.write(cmd);
+  if(release_cs){
+    cs = 1;
   }
-  if (Wire.endTransmission()){
-    return STATUS_ERROR;
-  }
-  if (Wire.requestFrom(I2C_address, uint8_t(1)) != 1){
-    return STATUS_ERROR;
-  }
-  return Wire.read();
+  return buffer;
 }
 
-uint8_t
-MLX90393::
-exit(uint8_t address)
-{
+uint8_t MLX90393::exit(uint8_t address){
   return sendCommand(CMD_EXIT);
 }
 
-uint8_t
-MLX90393::
-startBurst(uint8_t zyxt_flags)
-{
+uint8_t MLX90393::startBurst(uint8_t zyxt_flags){
   uint8_t cmd = CMD_START_BURST | (zyxt_flags & 0xf);
   return sendCommand(cmd);
 }
 
-uint8_t
-MLX90393::
-startWakeOnChange(uint8_t zyxt_flags)
-{
+uint8_t MLX90393::startWakeOnChange(uint8_t zyxt_flags){
   uint8_t cmd = CMD_WAKE_ON_CHANGE | (zyxt_flags & 0xf);
   return sendCommand(cmd);
 }
 
-uint8_t
-MLX90393::
-startMeasurement(uint8_t zyxt_flags)
-{
+uint8_t MLX90393::startMeasurement(uint8_t zyxt_flags){
   uint8_t cmd = CMD_START_MEASUREMENT | (zyxt_flags & 0xf);
   return sendCommand(cmd);
 }
 
-uint8_t
-MLX90393::
-readMeasurement(uint8_t zyxt_flags, txyzRaw& txyz_result)
-{
+uint8_t MLX90393::readMeasurement(uint8_t zyxt_flags, txyzRaw& txyz_result){
   uint8_t cmd = CMD_READ_MEASUREMENT | (zyxt_flags & 0xf);
-  Wire.beginTransmission(I2C_address);
-  if(Wire.write(cmd) != 1){
-    return STATUS_ERROR;
-  }
-  if (Wire.endTransmission()){
-    return STATUS_ERROR;
-  }
 
   uint8_t buffer[9];
   uint8_t count = 1 + (((zyxt_flags & Z_FLAG)?2:0) +
                        ((zyxt_flags & Y_FLAG)?2:0) + 
                        ((zyxt_flags & X_FLAG)?2:0) +
                        ((zyxt_flags & T_FLAG)?2:0) );
-  
-  if(Wire.requestFrom(I2C_address, count) != count){
-    return STATUS_ERROR;
-  }
+
+  // send command and store status byte
+  uint8_t status = sendCommand(count, flase);
+
   for (uint8_t i=0; i < count; i++){
-    if (Wire.available()){
-      buffer[i] = Wire.read();
-    } else {
-      return STATUS_ERROR;
-    }
+    // request data without releasing CS
+    buffer[i] = sendCommand(0x00, false);
   }
+  // release CS
+  cs = 1;
 
   uint8_t i = 1;
   if (zyxt_flags & T_FLAG){
@@ -190,104 +150,63 @@ readMeasurement(uint8_t zyxt_flags, txyzRaw& txyz_result)
   return buffer[0];
 }
 
-uint8_t 
-MLX90393::
-readRegister(uint8_t address, uint16_t& data)
-{
-  Wire.beginTransmission(I2C_address);
-  if (Wire.write(CMD_READ_REGISTER) != 1){
-    return STATUS_ERROR;
-  }
-  if (Wire.write((address & 0x3f)<<2) != 1){
-    return STATUS_ERROR;
-  }
-  if(Wire.endTransmission()){
-    return STATUS_ERROR;
-  }
-  if (Wire.requestFrom(I2C_address, uint8_t(3)) != 3){
-    return STATUS_ERROR;
-  }
+uint8_t MLX90393::readRegister(uint8_t address, uint16_t& data){
+  // send RR command
+  sendCommand(CMD_READ_REGISTER, false);
+  // send address
+  sendCommand((address & 0x3f)<<2, false);
+
   uint8_t status, b_h, b_l;
-  if (Wire.available()){
-    status = Wire.read();
-  } else {
-    return STATUS_ERROR;
-  }
-  if (Wire.available()){
-    b_h = Wire.read();
-  } else {
-    return STATUS_ERROR;
-  }
-  if (Wire.available()){
-    b_l = Wire.read();
-  } else {
-    return STATUS_ERROR;
-  }
+
+  // read status byte
+  status = sendCommand(0x00, false);
+  // read two register value bytes
+  b_h = sendCommand(0x00, false);
+  b_l = sendCommand(0x00, false);
+
+  // release CS
+  cs = 1;
+
   data = (uint16_t(b_h)<<8) | b_l;
+
   return status;
 }
 
-uint8_t
-MLX90393::
-writeRegister(uint8_t address, uint16_t data)
-{
+uint8_t MLX90393::writeRegister(uint8_t address, uint16_t data){
   invalidateCache();
-  Wire.beginTransmission(I2C_address);
-  if ( Wire.write(CMD_WRITE_REGISTER) != 1){
-    return STATUS_ERROR;
-  }
-  if (Wire.write((data & 0xff00) >> 8) != 1){
-    return STATUS_ERROR;
-  }
-  if (Wire.write(data & 0x00ff) != 1){
-    return STATUS_ERROR;
-  }
-  if (Wire.write((address & 0x3f)<<2) != 1){
-    return STATUS_ERROR;
-  }
-  if (Wire.endTransmission()){
-    return STATUS_ERROR;
-  }
-  if (Wire.requestFrom(I2C_address, uint8_t(1)) != 1){
-    return STATUS_ERROR;
-  }
-  if (Wire.available()){
-    return Wire.read();
-  } else {
-    return STATUS_ERROR;
-  }
+
+  // send WR command
+  sendCommand(CMD_WRITE_REGISTER, false);
+
+  // write two register bytes
+  sendCommand((data & 0xff00) >> 8, false);
+  sendCommand(data & 0x00ff, false);
+
+  // write address byte
+  sendCommand((address & 0x3f) << 2, false);
+
+  // request status byte, release cs
+  return sendCommand(0x00, true);
 }
 
-uint8_t
-MLX90393::
-reset()
-{
+uint8_t MLX90393::reset(){
   invalidateCache();
   uint8_t cmd = CMD_RESET;
   return sendCommand(cmd);
 }
 
-uint8_t
-MLX90393::
-memoryRecall()
-{
+uint8_t MLX90393::memoryRecall(){
   invalidateCache();
   uint8_t cmd = CMD_MEMORY_RECALL;
   return sendCommand(cmd);
 }
 
-uint8_t
-MLX90393::
-memoryStore()
-{
+uint8_t MLX90393::memoryStore(){
   uint8_t cmd = CMD_MEMORY_STORE;
   return sendCommand(cmd);
 }
 
-MLX90393::txyz
-MLX90393::
-convertRaw(MLX90393::txyzRaw raw)
-{
+MLX90393::txyz MLX90393::convertRaw(MLX90393::txyzRaw raw){
   txyz data;
 
   float gain_factor = gain_multipliers[7 - (gain_sel & 0x7)];
@@ -356,10 +275,7 @@ convertRaw(MLX90393::txyzRaw raw)
   return data;
 }
 
-uint8_t
-MLX90393::
-readData(MLX90393::txyz& data)
-{
+uint8_t MLX90393::readData(MLX90393::txyz& data){
   // refresh cached values if dirty - used for scaling after read
   if (gain_sel_dirty){
     uint8_t gs;
@@ -406,10 +322,7 @@ readData(MLX90393::txyz& data)
   return checkStatus(status1) | checkStatus(status2);
 }
 
-uint8_t
-MLX90393::
-setGainSel(uint8_t gain_sel)
-{
+uint8_t MLX90393::setGainSel(uint8_t gain_sel){
   uint16_t old_val;
   uint8_t status1 = readRegister(GAIN_SEL_REG, old_val);
   uint8_t status2 = writeRegister(GAIN_SEL_REG, 
@@ -422,10 +335,7 @@ setGainSel(uint8_t gain_sel)
   return checkStatus(status1) | checkStatus(status2);
 }
 
-uint8_t
-MLX90393::
-getGainSel(uint8_t& gain_sel)
-{
+uint8_t MLX90393::getGainSel(uint8_t& gain_sel){
   uint16_t reg_val;
   uint8_t status = readRegister(GAIN_SEL_REG, reg_val);
   this->gain_sel = gain_sel = (reg_val & GAIN_SEL_MASK) >> GAIN_SEL_SHIFT;
@@ -433,10 +343,7 @@ getGainSel(uint8_t& gain_sel)
   return checkStatus(status);
 }
 
-uint8_t
-MLX90393::
-setOverSampling(uint8_t osr)
-{
+uint8_t MLX90393::setOverSampling(uint8_t osr){
   uint16_t old_val;
   uint8_t status1 = readRegister(OSR_REG, old_val);
   uint8_t status2 = writeRegister(OSR_REG, 
@@ -447,10 +354,7 @@ setOverSampling(uint8_t osr)
   return checkStatus(status1) | checkStatus(status2);
 }
 
-uint8_t
-MLX90393::
-getOverSampling(uint8_t& osr)
-{
+uint8_t MLX90393::getOverSampling(uint8_t& osr){
   uint16_t reg_val;
   uint8_t status = readRegister(OSR_REG, reg_val);
   this->osr = osr = (reg_val & OSR_MASK) >> OSR_SHIFT;
@@ -458,10 +362,7 @@ getOverSampling(uint8_t& osr)
   return checkStatus(status);
 }
 
-uint8_t
-MLX90393::
-setTemperatureOverSampling(uint8_t osr2)
-{
+uint8_t MLX90393::setTemperatureOverSampling(uint8_t osr2){
   uint16_t old_val;
   uint8_t status1 = readRegister(OSR2_REG, old_val);
   uint8_t status2 = writeRegister(OSR2_REG, 
@@ -472,10 +373,7 @@ setTemperatureOverSampling(uint8_t osr2)
   return checkStatus(status1) | checkStatus(status2);
 }
 
-uint8_t
-MLX90393::
-getTemperatureOverSampling(uint8_t& osr2)
-{
+uint8_t MLX90393::getTemperatureOverSampling(uint8_t& osr2){
   uint16_t reg_val;
   uint8_t status = readRegister(OSR2_REG, reg_val);
   this->osr2 = osr2 = (reg_val & OSR2_MASK) >> OSR2_SHIFT;
@@ -483,10 +381,7 @@ getTemperatureOverSampling(uint8_t& osr2)
   return checkStatus(status);
 }
 
-uint8_t
-MLX90393::
-setDigitalFiltering(uint8_t dig_flt)
-{
+uint8_t MLX90393::setDigitalFiltering(uint8_t dig_flt){
   uint16_t old_val;
   uint8_t status1 = readRegister(DIG_FLT_REG, old_val);
   uint8_t status2 = writeRegister(DIG_FLT_REG, 
@@ -499,10 +394,7 @@ setDigitalFiltering(uint8_t dig_flt)
   return checkStatus(status1) | checkStatus(status2);
 }
 
-uint8_t
-MLX90393::
-getDigitalFiltering(uint8_t& dig_flt)
-{
+uint8_t MLX90393::getDigitalFiltering(uint8_t& dig_flt){
   uint16_t reg_val;
   uint8_t status = readRegister(DIG_FLT_REG, reg_val);
   this->dig_flt = (reg_val & DIG_FLT_MASK) >> DIG_FLT_SHIFT;
@@ -510,10 +402,7 @@ getDigitalFiltering(uint8_t& dig_flt)
   return checkStatus(status);
 }
 
-uint8_t
-MLX90393::
-setResolution(uint8_t res_x, uint8_t res_y, uint8_t res_z)
-{
+uint8_t MLX90393::setResolution(uint8_t res_x, uint8_t res_y, uint8_t res_z){
   uint16_t res_xyz = ((res_z & 0x3)<<4) | ((res_y & 0x3)<<2) | (res_x & 0x3);
   uint16_t old_val;
   uint8_t status1 = readRegister(RES_XYZ_REG, old_val);
@@ -527,10 +416,7 @@ setResolution(uint8_t res_x, uint8_t res_y, uint8_t res_z)
   return checkStatus(status1) | checkStatus(status2);
 }
 
-uint8_t
-MLX90393::
-getResolution(uint8_t& res_x, uint8_t& res_y, uint8_t& res_z)
-{
+uint8_t MLX90393::getResolution(uint8_t& res_x, uint8_t& res_y, uint8_t& res_z){
   uint16_t reg_val;
   uint8_t status = readRegister(RES_XYZ_REG, reg_val);
   uint8_t res_xyz = (reg_val & RES_XYZ_MASK) >> RES_XYZ_SHIFT;
@@ -540,11 +426,8 @@ getResolution(uint8_t& res_x, uint8_t& res_y, uint8_t& res_z)
   res_xyz_dirty = 0;
   return checkStatus(status);
 }
- 
-uint8_t
-MLX90393::
-setTemperatureCompensation(uint8_t enabled)
-{
+
+uint8_t MLX90393::setTemperatureCompensation(uint8_t enabled){
   uint8_t tcmp_en = enabled?1:0;
   uint16_t old_val;
   uint8_t status1 = readRegister(TCMP_EN_REG, old_val);
@@ -557,10 +440,7 @@ setTemperatureCompensation(uint8_t enabled)
   return checkStatus(status1) | checkStatus(status2);
 }
 
-uint8_t
-MLX90393::
-getTemperatureCompensation(uint8_t& enabled)
-{
+uint8_t MLX90393::getTemperatureCompensation(uint8_t& enabled){
   uint16_t reg_val;
   uint8_t status = readRegister(TCMP_EN_REG, reg_val);
   this->tcmp_en = enabled = (reg_val & TCMP_EN_MASK) >> TCMP_EN_SHIFT;
@@ -568,37 +448,25 @@ getTemperatureCompensation(uint8_t& enabled)
   return checkStatus(status);
 }
 
-uint8_t
-MLX90393::
-setOffsets(uint16_t x, uint16_t y, uint16_t z)
-{
+uint8_t MLX90393::setOffsets(uint16_t x, uint16_t y, uint16_t z){
   uint8_t status1 = writeRegister(X_OFFSET_REG, x);
   uint8_t status2 = writeRegister(Y_OFFSET_REG, y);
   uint8_t status3 = writeRegister(Z_OFFSET_REG, z);
   return checkStatus(status1) | checkStatus(status2) | checkStatus(status3);
 }
 
-uint8_t
-MLX90393::
-setWOXYThreshold(uint16_t woxy_thresh)
-{
+uint8_t MLX90393::setWOXYThreshold(uint16_t woxy_thresh){
   uint8_t status = writeRegister(WOXY_THRESHOLD_REG, woxy_thresh);
   return checkStatus(status);
 }
 
-uint8_t
-MLX90393::
-setWOZThreshold(uint16_t woz_thresh)
-{
+uint8_t MLX90393::setWOZThreshold(uint16_t woz_thresh){
   uint8_t status = writeRegister(WOZ_THRESHOLD_REG, woz_thresh);
   return checkStatus(status);
 }
 
 
-uint8_t
-MLX90393::
-setWOTThreshold(uint16_t wot_thresh)
-{
+uint8_t MLX90393::setWOTThreshold(uint16_t wot_thresh){
   uint8_t status = writeRegister(WOT_THRESHOLD_REG, wot_thresh);
   return checkStatus(status);
 }
