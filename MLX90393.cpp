@@ -9,7 +9,7 @@
 
 #include "MLX90393.h"
 
-MLX90393::MLX90393(PinName csPin, SPI* spi_)  : cs(csPin){
+MLX90393::MLX90393(PinName csPin, SPI* spi_):cs(csPin){
   // set cs high (active low)
   cs = 1;
 
@@ -73,10 +73,10 @@ uint8_t MLX90393::checkStatus(uint8_t status){
   }
 }
 
-uint8_t MLX90393::sendCommand(uint8_t cmd, bool release_cs = true){
+uint8_t MLX90393::sendCommand(uint8_t cmd, bool release_cs){
   // activate ChipSelect
   cs = 0;
-  uint8_t buffer = spi.write(cmd);
+  uint8_t buffer = spi->write(cmd);
   if(release_cs){
     cs = 1;
   }
@@ -105,14 +105,16 @@ uint8_t MLX90393::startMeasurement(uint8_t zyxt_flags){
 uint8_t MLX90393::readMeasurement(uint8_t zyxt_flags, txyzRaw& txyz_result){
   uint8_t cmd = CMD_READ_MEASUREMENT | (zyxt_flags & 0xf);
 
+  // send command and store status byte
+  uint8_t status = sendCommand(cmd, false);
+
   uint8_t buffer[9];
+
+  // calculate return size
   uint8_t count = 1 + (((zyxt_flags & Z_FLAG)?2:0) +
                        ((zyxt_flags & Y_FLAG)?2:0) + 
                        ((zyxt_flags & X_FLAG)?2:0) +
                        ((zyxt_flags & T_FLAG)?2:0) );
-
-  // send command and store status byte
-  uint8_t status = sendCommand(count, flase);
 
   for (uint8_t i=0; i < count; i++){
     // request data without releasing CS
@@ -275,6 +277,43 @@ MLX90393::txyz MLX90393::convertRaw(MLX90393::txyzRaw raw){
   return data;
 }
 
+uint16_t MLX90393::readZ(){
+  txyz data;
+  // refresh cached values if dirty - used for scaling after read
+  if (gain_sel_dirty){
+    uint8_t gs;
+    getGainSel(gs);
+  }
+  if (res_xyz_dirty){
+    uint8_t rx, ry, rz;
+    getResolution(rx, ry, rz);
+  }
+  if (tcmp_en_dirty){
+    uint8_t en;
+    getTemperatureCompensation(en);
+  }
+  if (osr_dirty){
+    uint8_t osr;
+    getOverSampling(osr);
+  }
+  if (osr2_dirty){
+    uint8_t osr2;
+    getOverSampling(osr2);
+  }
+
+  uint8_t status1 = startMeasurement(Z_FLAG);
+  // estimate conversion time from datasheet equations
+  float Tconv = ( (2 + (1 << dig_flt)) * (1 << osr) *0.064f +
+                  (1 << osr2) * 0.192f );
+  // add 30% tolerance
+  wait_ms(Tconv * 1.3f);
+
+  txyzRaw raw_txyz;
+  uint8_t status2 = readMeasurement(Z_FLAG, raw_txyz);
+  data = convertRaw(raw_txyz);
+  return data.z;
+}
+
 uint8_t MLX90393::readData(MLX90393::txyz& data){
   // refresh cached values if dirty - used for scaling after read
   if (gain_sel_dirty){
@@ -289,35 +328,24 @@ uint8_t MLX90393::readData(MLX90393::txyz& data){
     uint8_t en;
     getTemperatureCompensation(en);
   }
-  if (DRDY_pin < 0){
-    if (osr_dirty){
-      uint8_t osr;
-      getOverSampling(osr);
-    }
-    if (osr2_dirty){
-      uint8_t osr2;
-      getOverSampling(osr2);
-    }
+  if (osr_dirty){
+    uint8_t osr;
+    getOverSampling(osr);
+  }
+  if (osr2_dirty){
+    uint8_t osr2;
+    getOverSampling(osr2);
   }
 
   uint8_t status1 = startMeasurement(X_FLAG | Y_FLAG | Z_FLAG | T_FLAG);
+  // estimate conversion time from datasheet equations
+  float Tconv = ( 3 * (2 + (1 << dig_flt)) * (1 << osr) *0.064f +
+                  (1 << osr2) * 0.192f );
+  // add 30% tolerance
+  wait_ms(Tconv * 1.3f);
 
-  // wait for DRDY signal if connected, otherwise delay appropriately
-  if (DRDY_pin >= 0){
-    delayMicroseconds(600);
-    while(!digitalRead(DRDY_pin)){
-      // busy wait
-    }
-  } else {
-    // estimate conversion time from datasheet equations
-    float Tconv = ( 3 * (2 + (1 << dig_flt)) * (1 << osr) *0.064f +
-                    (1 << osr2) * 0.192f );
-    // add 30% tolerance
-    delay(Tconv * 1.3f);
-  }
   txyzRaw raw_txyz;
-  uint8_t status2 = 
-    readMeasurement(X_FLAG | Y_FLAG | Z_FLAG | T_FLAG, raw_txyz);
+  uint8_t status2 = readMeasurement(X_FLAG | Y_FLAG | Z_FLAG | T_FLAG, raw_txyz);
   data = convertRaw(raw_txyz);
   return checkStatus(status1) | checkStatus(status2);
 }

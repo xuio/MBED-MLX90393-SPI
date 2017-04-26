@@ -46,8 +46,8 @@ public:
     uint16_t y;
     uint16_t z;
   };
-
-  MLX90393();
+  
+  MLX90393(PinName csPin, SPI* spi_);
   
   // raw device commands
   uint8_t exit(uint8_t address);
@@ -63,8 +63,9 @@ public:
   uint8_t nop();
 
   // higher-level API
-  uint8_t begin(uint8_t A1 = 0, uint8_t A0 = 0, int DRDY_pin = -1);
+  uint8_t begin();
   uint8_t readData(txyz& data);
+  uint16_t readZ();
   uint8_t setGainSel(uint8_t gain_sel);
   uint8_t getGainSel(uint8_t& gain_sel);
   uint8_t setOverSampling(uint8_t osr);
@@ -183,7 +184,7 @@ private:
   float base_xy_sens;
   float base_z_sens;
 
-  uint8_t sendCommand(uint8_t cmd);
+  uint8_t sendCommand(uint8_t cmd, bool release_cs = true);
   void invalidateCache();
   uint8_t checkStatus(uint8_t status);
   txyz convertRaw(txyzRaw raw);
